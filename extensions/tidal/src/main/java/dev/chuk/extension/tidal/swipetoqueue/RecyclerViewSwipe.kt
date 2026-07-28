@@ -5,9 +5,6 @@
 
 package dev.chuk.extension.tidal.swipetoqueue
 
-import android.animation.Animator
-import android.animation.AnimatorListenerAdapter
-import android.animation.ValueAnimator
 import android.content.res.Resources
 import android.graphics.Canvas
 import android.graphics.Color
@@ -15,13 +12,14 @@ import android.graphics.ColorFilter
 import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.drawable.Drawable
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import androidx.recyclerview.widget.RecyclerView
 import kotlin.math.abs
 import kotlin.math.min
-import kotlin.math.sin
 
 /**
  * The same gesture as [SwipeToQueueElement] for the screens that still use RecyclerView rows,
@@ -34,6 +32,11 @@ object RecyclerViewSwipe {
 
     private const val LOG_TAG = "morphe-swipe-to-queue"
     private const val TAG_KEY = 0x4d535751 // "MSWQ"
+
+    /** How long the row stays pushed out before it snaps back. */
+    private const val HOLD_MS = 160L
+
+    private val handler = Handler(Looper.getMainLooper())
 
     @JvmStatic
     fun attach(recyclerView: RecyclerView?) {
@@ -122,29 +125,20 @@ object RecyclerViewSwipe {
         override fun onRequestDisallowInterceptTouchEvent(disallow: Boolean) = Unit
 
         /**
-         * The same confirmation the Compose rows show: one short push of the row to the right and
-         * back over a strip carrying the queue glyph, on a fixed 200ms curve.
+         * The same confirmation the Compose rows show: the row snaps to the right, uncovering a
+         * strip with the queue glyph, and snaps back. Both steps are instant.
          */
         private fun confirm(recyclerView: RecyclerView, row: View) {
+            val offset = 64f * density
             val indicator = QueueIndicator(row, density)
+            indicator.update(offset)
             recyclerView.overlay.add(indicator)
+            row.translationX = offset
 
-            ValueAnimator.ofFloat(0f, 1f).apply {
-                duration = 200L
-                addUpdateListener {
-                    val travel = sin((it.animatedValue as Float) * Math.PI).toFloat()
-                    val offset = travel * 56f * density
-                    row.translationX = offset
-                    indicator.update(offset, travel)
-                }
-                addListener(object : AnimatorListenerAdapter() {
-                    override fun onAnimationEnd(animation: Animator) {
-                        row.translationX = 0f
-                        recyclerView.overlay.remove(indicator)
-                    }
-                })
-                start()
-            }
+            handler.postDelayed({
+                row.translationX = 0f
+                recyclerView.overlay.remove(indicator)
+            }, HOLD_MS)
         }
     }
 
@@ -156,11 +150,9 @@ object RecyclerViewSwipe {
 
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private var offset = 0f
-        private var travel = 0f
 
-        fun update(offset: Float, travel: Float) {
+        fun update(offset: Float) {
             this.offset = offset
-            this.travel = travel
             invalidateSelf()
         }
 
@@ -174,7 +166,7 @@ object RecyclerViewSwipe {
             paint.color = ACCENT
             canvas.drawRect(left, top, left + offset, bottom, paint)
 
-            val glyph = 22f * density * (0.7f + 0.3f * travel)
+            val glyph = 22f * density
             if (offset < glyph * 1.5f) return
             val centerX = left + min(offset / 2f, offset - glyph)
             val centerY = (top + bottom) / 2f
@@ -182,7 +174,7 @@ object RecyclerViewSwipe {
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 2f * density
             paint.strokeCap = Paint.Cap.ROUND
-            paint.color = Color.argb((255 * min(travel * 1.6f, 1f)).toInt(), 255, 255, 255)
+            paint.color = Color.WHITE
 
             val glyphLeft = centerX - glyph / 2f
             val glyphRight = centerX + glyph / 2f

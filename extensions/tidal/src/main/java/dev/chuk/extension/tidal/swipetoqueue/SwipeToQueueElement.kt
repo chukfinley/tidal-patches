@@ -5,8 +5,9 @@
 
 package dev.chuk.extension.tidal.swipetoqueue
 
-import android.animation.ValueAnimator
 import android.content.res.Resources
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -25,9 +26,7 @@ import androidx.compose.ui.node.PointerInputModifierNode
 import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.unit.IntSize
 import kotlin.math.abs
-import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sin
 
 /**
  * Modifier element the patch appends to every long clickable Compose row.
@@ -63,7 +62,8 @@ internal class SwipeToQueueNode(
     private val triggerDistance = 40f * density
     private val minRowHeight = 32f * density
     private val maxRowHeight = 132f * density
-    private val pushDistance = 56f * density
+    // Roughly a centimetre.
+    private val pushDistance = 64f * density
     private val iconSize = 22f * density
 
     private var rootWidth = 0
@@ -72,18 +72,16 @@ internal class SwipeToQueueNode(
     private var tracking = false
     private var fired = false
 
-    /** 0 while idle, 1 at the peak of the confirmation. */
-    private var progress = 0f
-    private var animator: ValueAnimator? = null
+    /** How far the row currently sits to the right. Either fully out or fully back, never between. */
+    private var offset = 0f
 
     override fun onPlaced(coordinates: LayoutCoordinates) {
         rootWidth = coordinates.findRootCoordinates().size.width
     }
 
     override fun onDetach() {
-        animator?.cancel()
-        animator = null
-        progress = 0f
+        handler.removeCallbacksAndMessages(null)
+        offset = 0f
     }
 
     override fun onCancelPointerInput() {
@@ -151,56 +149,50 @@ internal class SwipeToQueueNode(
     }
 
     /**
-     * The confirmation: one short push of the row to the right and back, over a strip carrying
-     * the queue glyph. It is a fixed 200ms curve rather than something that follows the finger,
-     * so it always looks the same and cannot stutter along with the drag.
+     * The confirmation: the row snaps to the right, uncovering a strip with the queue glyph, and
+     * snaps back. Both steps are instant. Nothing is interpolated, so there is no motion that
+     * could lag behind the swipe.
      */
     private fun confirm() {
-        animator?.cancel()
-        animator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 200L
-            addUpdateListener {
-                progress = it.animatedValue as Float
-                if (isAttached) invalidateDraw()
-            }
-            start()
-        }
+        handler.removeCallbacksAndMessages(null)
+        offset = pushDistance
+        if (isAttached) invalidateDraw()
+        handler.postDelayed({
+            offset = 0f
+            if (isAttached) invalidateDraw()
+        }, HOLD_MS)
     }
 
     override fun ContentDrawScope.draw() {
-        val current = progress
+        val current = offset
         if (current <= 0f) {
             drawContent()
             return
         }
 
-        // Out and back within the single curve.
-        val travel = sin(current * Math.PI).toFloat()
-        val offset = travel * pushDistance
-
         drawRect(
             color = ACCENT,
             topLeft = Offset.Zero,
-            size = Size(max(offset, 0f), size.height),
+            size = Size(current, size.height),
         )
-        drawQueueIcon(offset, size.height, travel)
+        drawQueueIcon(current, size.height)
 
         val canvas = drawContext.canvas
         canvas.save()
-        canvas.translate(offset, 0f)
+        canvas.translate(current, 0f)
         drawContent()
         canvas.restore()
     }
 
     /** Three list lines with a plus, drawn from primitives so the patch adds no drawable. */
-    private fun ContentDrawScope.drawQueueIcon(revealed: Float, height: Float, travel: Float) {
-        val glyph = iconSize * (0.7f + 0.3f * travel)
+    private fun ContentDrawScope.drawQueueIcon(revealed: Float, height: Float) {
+        val glyph = iconSize
         if (revealed < glyph * 1.5f) return
 
         val centerX = min(revealed / 2f, revealed - glyph)
         val centerY = height / 2f
         val stroke = 2f * density
-        val color = Color.White.copy(alpha = min(travel * 1.6f, 1f))
+        val color = Color.White
 
         val left = centerX - glyph / 2f
         val right = centerX + glyph / 2f
@@ -228,5 +220,10 @@ internal class SwipeToQueueNode(
     private companion object {
         /** Spotify's "add to queue" green. */
         val ACCENT = Color(0xFF1DB954)
+
+        /** How long the row stays pushed out before it snaps back. */
+        const val HOLD_MS = 160L
+
+        val handler = Handler(Looper.getMainLooper())
     }
 }

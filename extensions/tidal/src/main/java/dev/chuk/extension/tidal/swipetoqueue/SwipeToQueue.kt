@@ -5,19 +5,15 @@
 
 package dev.chuk.extension.tidal.swipetoqueue
 
-import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
-import android.widget.Toast
 import androidx.compose.ui.Modifier
 
 /**
  * Spotify style "swipe right to add to queue".
  *
  * A swipe fires the row's own long press, which is the app's path to the track context menu.
- * [onTrackContextMenu] intercepts that call before any menu is built: it takes the play queue
+ * [onContextMenuShown] intercepts that call before any menu is built: it takes the play queue
  * source the app already assembled for the item and appends it directly. Nothing is drawn and
  * nothing is shown, so the gesture is instant.
  */
@@ -33,8 +29,6 @@ object SwipeToQueue {
      * press detector may have started during the drag.
      */
     private const val ARM_TIMEOUT_MS = 1_500L
-
-    private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile
     private var armedAt = 0L
@@ -135,7 +129,6 @@ object SwipeToQueue {
             addSourceToQueue(source)
             handled = true
             disarm()
-            (activity as? Context)?.let { toast(it) }
             true
         } catch (ex: Throwable) {
             Log.e(LOG_TAG, "Add to queue failed", ex)
@@ -205,13 +198,4 @@ object SwipeToQueue {
         return false
     }
 
-    private fun toast(context: Context) {
-        mainHandler.post {
-            try {
-                Toast.makeText(context, "Added to queue", Toast.LENGTH_SHORT).show()
-            } catch (ex: Throwable) {
-                Log.e(LOG_TAG, "Could not show toast", ex)
-            }
-        }
-    }
 }
