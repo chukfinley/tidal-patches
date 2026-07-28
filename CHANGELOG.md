@@ -1,3 +1,9 @@
+## [1.0.1](https://github.com/chukfinley/tidal-patches/compare/v1.0.0...v1.0.1) (2026-07-28)
+
+### 🐛 Bug Fixes
+
+* Crash on the first layout pass after patching ([66c570d](https://github.com/chukfinley/tidal-patches/commit/66c570d4318816a11deb5c4cb5f4eb8f559f7c85))
+
 ## [1.0.1-dev.1](https://github.com/chukfinley/tidal-patches/compare/v1.0.0...v1.0.1-dev.1) (2026-07-28)
 
 ### 🐛 Bug Fixes

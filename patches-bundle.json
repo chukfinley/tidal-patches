@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-07-28T09:11:42",
-  "description": "## [1.0.1-dev.1](https://github.com/chukfinley/tidal-patches/compare/v1.0.0...v1.0.1-dev.1) (2026-07-28)\n\n### 🐛 Bug Fixes\n\n* Crash on the first layout pass after patching ([66c570d](https://github.com/chukfinley/tidal-patches/commit/66c570d4318816a11deb5c4cb5f4eb8f559f7c85))",
-  "download_url": "https://github.com/chukfinley/tidal-patches/releases/download/v1.0.1-dev.1/patches-1.0.1-dev.1.mpp",
+  "created_at": "2026-07-28T09:14:07",
+  "description": "## [1.0.1](https://github.com/chukfinley/tidal-patches/compare/v1.0.0...v1.0.1) (2026-07-28)\n\n### 🐛 Bug Fixes\n\n* Crash on the first layout pass after patching ([66c570d](https://github.com/chukfinley/tidal-patches/commit/66c570d4318816a11deb5c4cb5f4eb8f559f7c85))",
+  "download_url": "https://github.com/chukfinley/tidal-patches/releases/download/v1.0.1/patches-1.0.1.mpp",
   "signature_download_url": "",
-  "version": "1.0.1-dev.1"
+  "version": "1.0.1"
 }
