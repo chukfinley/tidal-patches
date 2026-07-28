@@ -1,14 +1,13 @@
-group = "app.template"
+group = "dev.chuk"
 
 patches {
-    // TODO: Update this section with your project details.
     about {
-        name = "UserXYZ Patches"
-        description = "Patches for apps I like"
-        source = "git@github.com:UserXYZ/morphe-patches.git"
-        author = "Awesome dev"
-        contact = "na"
-        website = "na"
+        name = "chukfinley TIDAL Patches"
+        description = "Patches for the TIDAL Android app"
+        source = "git@github.com:chukfinley/tidal-patches.git"
+        author = "chukfinley"
+        contact = "https://github.com/chukfinley/tidal-patches/issues"
+        website = "https://github.com/chukfinley/tidal-patches"
         license = "GPLv3"
     }
 }
