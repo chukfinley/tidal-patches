@@ -30,29 +30,40 @@ object SwipeToQueue {
      */
     private const val ARM_TIMEOUT_MS = 1_500L
 
+    /** While a drag is running, no menu may appear - but nothing is queued either. */
     @Volatile
-    private var armedAt = 0L
+    private var suppressAt = 0L
+
+    /** Set when a completed swipe asked for the item to be queued. */
+    @Volatile
+    private var commitAt = 0L
 
     /** Set once an item was queued, so one swipe never queues twice. */
     @Volatile
     private var handled = false
 
     /**
-     * Called as soon as a drag looks horizontal, before it is long enough to queue anything.
+     * Called as soon as a drag looks horizontal.
      *
-     * From that moment the app's own long press detector may fire at any time. Its menu is
-     * intercepted like the one the gesture triggers itself, so a slow swipe queues the item
-     * instead of opening a menu.
+     * From that moment the app's own long press detector may fire at any time. Its menu would
+     * cover the row mid drag, so it is swallowed - but the item is not queued, because the swipe
+     * is not finished yet.
      */
     @JvmStatic
-    fun arm() {
-        armedAt = SystemClock.uptimeMillis()
+    fun beginDrag() {
+        suppressAt = SystemClock.uptimeMillis()
+    }
+
+    /** Called when a finished swipe wants the item queued. */
+    @JvmStatic
+    fun commit() {
+        commitAt = SystemClock.uptimeMillis()
     }
 
     /** Called when the finger leaves the screen. */
     @JvmStatic
-    fun endGesture() {
-        armedAt = 0L
+    fun endDrag() {
+        suppressAt = 0L
         handled = false
     }
 
@@ -60,14 +71,8 @@ object SwipeToQueue {
     @JvmStatic
     fun isHandled() = handled
 
-    private fun isArmed(): Boolean {
-        val armed = armedAt
-        return armed != 0L && SystemClock.uptimeMillis() - armed <= ARM_TIMEOUT_MS
-    }
-
-    private fun disarm() {
-        armedAt = 0L
-    }
+    private fun isFresh(stamp: Long) =
+        stamp != 0L && SystemClock.uptimeMillis() - stamp <= ARM_TIMEOUT_MS
 
     /**
      * Attached by the patch to every `androidx.compose.foundation.ClickableKt.combinedClickable`
@@ -84,25 +89,25 @@ object SwipeToQueue {
         }
     }
 
-    /** Fires the long click of a Compose row. */
+    /** Fires the long click of a Compose row, which is where the queueing happens. */
     @JvmStatic
     fun triggerFromCompose(onLongClick: Any) {
         if (handled) return
-        arm()
+        commit()
         try {
             val invoke = onLongClick.javaClass.methods.firstOrNull {
                 it.name == "invoke" && it.parameterTypes.isEmpty()
             }
             if (invoke == null) {
                 Log.w(LOG_TAG, "No invoke method on ${onLongClick.javaClass.name}")
-                disarm()
+                commitAt = 0L
                 return
             }
             invoke.isAccessible = true
             invoke.invoke(onLongClick)
         } catch (ex: Throwable) {
             Log.e(LOG_TAG, "Could not fire long click", ex)
-            disarm()
+            commitAt = 0L
         }
     }
 
@@ -117,7 +122,9 @@ object SwipeToQueue {
      */
     @JvmStatic
     fun onContextMenuShown(activity: Any?, contextMenu: Any?): Boolean {
-        if (!isArmed()) return false
+        // A menu during a drag is the app's own long press. Swallow it, but queue nothing: only
+        // a swipe carried through to the right counts.
+        if (!isFresh(commitAt)) return isFresh(suppressAt)
 
         val source = findSource(contextMenu)
         if (source == null) {
@@ -128,7 +135,7 @@ object SwipeToQueue {
         return try {
             addSourceToQueue(source)
             handled = true
-            disarm()
+            commitAt = 0L
             true
         } catch (ex: Throwable) {
             Log.e(LOG_TAG, "Add to queue failed", ex)

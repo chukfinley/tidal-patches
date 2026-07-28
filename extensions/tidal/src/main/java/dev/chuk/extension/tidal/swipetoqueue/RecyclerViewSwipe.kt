@@ -52,9 +52,14 @@ object RecyclerViewSwipe {
 
         private val density = Resources.getSystem().displayMetrics.density
         private val touchSlop = 8f * density
-        private val triggerDistance = 40f * density
-        private val maxOffset = 96f * density
         private val maxRowHeight = 132f * density
+
+        /**
+         * How far the row has to travel before letting go queues the item: a swipe carried across
+         * roughly half the row.
+         */
+        private var commitDistance = 0f
+        private var maxOffset = 0f
 
         private var downX = 0f
         private var downY = 0f
@@ -104,34 +109,44 @@ object RecyclerViewSwipe {
                         }
 
                         row = candidate
-                        indicator = QueueIndicator(candidate, density).also {
+                        commitDistance = candidate.width * 0.45f
+                        maxOffset = candidate.width * 0.6f
+                        indicator = QueueIndicator(candidate, density, commitDistance).also {
                             recyclerView.overlay.add(it)
                         }
                         active = true
-                        // From here on the app's own long press could fire, and its menu has to
-                        // be turned into a queue action just like the one below.
-                        SwipeToQueue.arm()
+                        // From here on the app's own long press could fire. Its menu is swallowed
+                        // while the finger is down, but nothing is queued by it.
+                        SwipeToQueue.beginDrag()
                     }
 
                     val offset = resist(dx - touchSlop)
                     row?.translationX = offset
                     indicator?.update(offset)
+                }
 
-                    if (!fired && offset >= triggerDistance) {
+                MotionEvent.ACTION_UP -> {
+                    // Only a swipe carried all the way through queues the item.
+                    val offset = row?.translationX ?: 0f
+                    if (active && offset >= commitDistance && !fired && !SwipeToQueue.isHandled()) {
                         fired = true
-                        if (SwipeToQueue.isHandled()) return
-                        SwipeToQueue.arm()
+                        SwipeToQueue.commit()
                         try {
                             row?.performLongClick()
                         } catch (ex: Throwable) {
                             Log.e(LOG_TAG, "Could not fire long click", ex)
                         }
                     }
+                    if (active) settle(recyclerView)
+                    if (tracking) SwipeToQueue.endDrag()
+                    tracking = false
+                    active = false
+                    fired = false
                 }
 
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                MotionEvent.ACTION_CANCEL -> {
                     if (active) settle(recyclerView)
-                    if (tracking) SwipeToQueue.endGesture()
+                    if (tracking) SwipeToQueue.endDrag()
                     tracking = false
                     active = false
                     fired = false
@@ -145,8 +160,8 @@ object RecyclerViewSwipe {
          */
         private fun resist(raw: Float): Float {
             if (raw <= 0f) return 0f
-            if (raw <= triggerDistance) return raw
-            return min(triggerDistance + (raw - triggerDistance) * 0.35f, maxOffset)
+            if (raw <= commitDistance) return raw
+            return min(commitDistance + (raw - commitDistance) * 0.35f, maxOffset)
         }
 
         /** Lets the row glide back once the finger is gone. */
@@ -182,6 +197,7 @@ object RecyclerViewSwipe {
     private class QueueIndicator(
         private val row: View,
         private val density: Float,
+        private val commitDistance: Float,
     ) : Drawable() {
 
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -202,7 +218,7 @@ object RecyclerViewSwipe {
             paint.color = ACCENT
             canvas.drawRect(left, top, left + offset, bottom, paint)
 
-            val ratio = min(offset / (40f * density), 1f)
+            val ratio = if (commitDistance <= 0f) 1f else min(offset / commitDistance, 1f)
             val glyph = 22f * density * (0.6f + 0.4f * ratio)
             if (offset < glyph * 1.5f) return
             val centerX = left + min(offset / 2f, offset - glyph)

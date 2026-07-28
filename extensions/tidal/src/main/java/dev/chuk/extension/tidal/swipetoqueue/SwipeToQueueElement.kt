@@ -58,15 +58,13 @@ internal class SwipeToQueueNode(
 ) : Modifier.Node(), PointerInputModifierNode, DrawModifierNode, LayoutAwareModifierNode {
 
     private val density = Resources.getSystem().displayMetrics.density
-    private val armDistance = 12f * density
-    private val triggerDistance = 40f * density
+    private val touchSlop = 8f * density
     private val minRowHeight = 32f * density
     private val maxRowHeight = 132f * density
-    private val touchSlop = 8f * density
-    private val maxOffset = 96f * density
     private val iconSize = 22f * density
 
     private var rootWidth = 0
+    private var rowWidth = 0
     private var downX = 0f
     private var downY = 0f
     private var tracking = false
@@ -79,7 +77,16 @@ internal class SwipeToQueueNode(
 
     override fun onPlaced(coordinates: LayoutCoordinates) {
         rootWidth = coordinates.findRootCoordinates().size.width
+        rowWidth = coordinates.size.width
     }
+
+    /**
+     * How far the row has to travel before letting go queues the item: a swipe carried across
+     * roughly half the row, the same commitment a swipe to dismiss asks for.
+     */
+    private val commitDistance get() = rowWidth * 0.45f
+
+    private val maxOffset get() = rowWidth * 0.6f
 
     override fun onDetach() {
         settleAnimator?.cancel()
@@ -89,7 +96,7 @@ internal class SwipeToQueueNode(
     }
 
     override fun onCancelPointerInput() {
-        if (tracking) SwipeToQueue.endGesture()
+        if (tracking) SwipeToQueue.endDrag()
         if (active) settle()
         tracking = false
         active = false
@@ -131,27 +138,28 @@ internal class SwipeToQueueNode(
                     if (dx < touchSlop || dx < abs(dy) * 1.5f) return
 
                     active = true
-                    // From here on the app's own long press detector could fire, and its menu has
-                    // to be turned into a queue action just like the one the gesture triggers.
-                    SwipeToQueue.arm()
+                    // From here on the app's own long press detector could fire. Its menu is
+                    // swallowed while the finger is down, but nothing is queued by it.
+                    SwipeToQueue.beginDrag()
                 }
 
                 offset = resist(dx - touchSlop)
                 change.consume()
                 if (isAttached) invalidateDraw()
-
-                if (!fired && offset >= triggerDistance) {
-                    fired = true
-                    SwipeToQueue.triggerFromCompose(onLongClick)
-                }
             }
 
             PointerEventType.Release -> {
                 if (active) {
                     change.consume()
+                    // Only a swipe carried all the way through queues the item. Anything shorter
+                    // just glides back.
+                    if (offset >= commitDistance && !fired) {
+                        fired = true
+                        SwipeToQueue.triggerFromCompose(onLongClick)
+                    }
                     settle()
                 }
-                if (tracking) SwipeToQueue.endGesture()
+                if (tracking) SwipeToQueue.endDrag()
                 tracking = false
                 active = false
                 fired = false
@@ -162,14 +170,14 @@ internal class SwipeToQueueNode(
     }
 
     /**
-     * The row follows the finger one to one up to the point where the item is queued, then gives
-     * way more slowly, so the gesture has an end that can be felt rather than a hard stop.
+     * The row follows the finger one to one up to the point where letting go queues the item,
+     * then gives way more slowly, so that point can be felt rather than guessed.
      */
     private fun resist(raw: Float): Float {
         if (raw <= 0f) return 0f
-        if (raw <= triggerDistance) return raw
-        val past = raw - triggerDistance
-        return min(triggerDistance + past * 0.35f, maxOffset)
+        val commit = commitDistance
+        if (raw <= commit) return raw
+        return min(commit + (raw - commit) * 0.35f, maxOffset)
     }
 
     /** Lets the row glide back once the finger is gone. */
@@ -212,8 +220,8 @@ internal class SwipeToQueueNode(
 
     /** Three list lines with a plus, drawn from primitives so the patch adds no drawable. */
     private fun ContentDrawScope.drawQueueIcon(revealed: Float, height: Float) {
-        // Grows in with the drag and settles at full size once the item is queued.
-        val ratio = min(revealed / triggerDistance, 1f)
+        // Grows in with the drag and reaches full size exactly where letting go starts to count.
+        val ratio = min(revealed / commitDistance, 1f)
         val glyph = iconSize * (0.6f + 0.4f * ratio)
         if (revealed < glyph * 1.5f) return
 
