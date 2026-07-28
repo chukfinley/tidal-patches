@@ -1,66 +1,78 @@
 /*
- * Copyright 2026 Morphe.
- * https://github.com/MorpheApp/morphe-patches
- *
- * See the included NOTICE file for GPLv3 Section 7 terms that apply to this code.
+ * Copyright 2026 chukfinley.
+ * https://github.com/chukfinley/tidal-patches
  */
 
 package dev.chuk.extension.tidal.swipetoqueue
 
-import android.app.Activity
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.widget.Toast
 import androidx.compose.ui.Modifier
-import java.lang.reflect.Method
-import java.util.concurrent.Executors
 
 /**
  * Spotify style "swipe right to add to queue".
  *
- * The gesture itself is implemented by [SwipeToQueueElement], which the patch attaches to every
- * `combinedClickable` modifier the app creates (Compose screens) and to legacy RecyclerView rows
- * (see [LegacyRowSwipe]).
- *
- * Instead of reimplementing "add to queue" - which would require reaching into the obfuscated
- * play queue internals - the gesture re-uses the app's own context menu:
- *
- *  1. the gesture fires the row's long click, which is what normally opens the context menu,
- *  2. [onContextMenuShown] intercepts the menu before it is displayed,
- *  3. the "Add to queue" entry of that menu is invoked directly and the menu is discarded.
- *
- * That way the correct item, source metadata, analytics and toast are all handled by the app.
+ * A swipe fires the row's own long press, which is the app's path to the track context menu.
+ * [onTrackContextMenu] intercepts that call before any menu is built: it takes the play queue
+ * source the app already assembled for the item and appends it directly. Nothing is drawn and
+ * nothing is shown, so the gesture is instant.
  */
 object SwipeToQueue {
 
     private const val LOG_TAG = "morphe-swipe-to-queue"
 
+    private const val SOURCE_CLASS = "com.aspiro.wamp.playqueue.source.model.Source"
+
     /**
-     * How long the interceptor stays armed after a swipe. Long enough to survive a view model
-     * round trip, short enough that a genuine long press is never swallowed.
+     * How long a swipe keeps the interceptor armed. Covers the view model round trip between the
+     * long press and the context menu call, and swallows a stray menu that the app's own long
+     * press detector may have started during the drag.
      */
-    private const val ARM_TIMEOUT_MS = 2_000L
+    private const val ARM_TIMEOUT_MS = 1_500L
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val background = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "morphe-swipe-to-queue").apply { isDaemon = true }
-    }
 
     @Volatile
     private var armedAt = 0L
 
-    /** Called by the gesture right before it fires the row's long click. */
+    /** Set once an item was queued, so one swipe never queues twice. */
+    @Volatile
+    private var handled = false
+
+    /**
+     * Called as soon as a drag looks horizontal, before it is long enough to queue anything.
+     *
+     * From that moment the app's own long press detector may fire at any time. Its menu is
+     * intercepted like the one the gesture triggers itself, so a slow swipe queues the item
+     * instead of opening a menu.
+     */
     @JvmStatic
     fun arm() {
         armedAt = SystemClock.uptimeMillis()
     }
 
-    private fun consumeArmed(): Boolean {
-        val armed = armedAt
-        if (armed == 0L || SystemClock.uptimeMillis() - armed > ARM_TIMEOUT_MS) return false
+    /** Called when the finger leaves the screen. */
+    @JvmStatic
+    fun endGesture() {
         armedAt = 0L
-        return true
+        handled = false
+    }
+
+    /** True once this gesture queued something, so the gesture must not trigger again. */
+    @JvmStatic
+    fun isHandled() = handled
+
+    private fun isArmed(): Boolean {
+        val armed = armedAt
+        return armed != 0L && SystemClock.uptimeMillis() - armed <= ARM_TIMEOUT_MS
+    }
+
+    private fun disarm() {
+        armedAt = 0L
     }
 
     /**
@@ -78,131 +90,10 @@ object SwipeToQueue {
         }
     }
 
-    /**
-     * Attached by the patch to the app's context menu manager.
-     *
-     * @return true when the menu was consumed by a swipe and must not be shown.
-     */
+    /** Fires the long click of a Compose row. */
     @JvmStatic
-    fun onContextMenuShown(activity: Any?, contextMenu: Any?): Boolean {
-        if (activity !is Activity || contextMenu == null) return false
-        if (!consumeArmed()) return false
-
-        background.execute {
-            try {
-                val item = findAddToQueueItem(activity, contextMenu)
-                if (item == null) {
-                    Log.w(LOG_TAG, "Context menu has no add to queue entry")
-                    return@execute
-                }
-                val click = findClickMethod(item.javaClass)
-                if (click == null) {
-                    Log.w(LOG_TAG, "No click method on ${item.javaClass.name}")
-                    return@execute
-                }
-                mainHandler.post {
-                    try {
-                        click.invoke(item, activity)
-                    } catch (ex: Throwable) {
-                        Log.e(LOG_TAG, "Add to queue failed", ex)
-                    }
-                }
-            } catch (ex: Throwable) {
-                Log.e(LOG_TAG, "Could not resolve add to queue entry", ex)
-            }
-        }
-
-        return true
-    }
-
-    /**
-     * The menu items of a context menu. Obfuscation renames the method, but there is exactly one
-     * parameterless method returning a [List] (the parameterless [ArrayList] variant is the
-     * pre-filtered one and is only used as a fallback).
-     */
-    private fun findAddToQueueItem(activity: Activity, contextMenu: Any): Any? {
-        val resources = activity.resources
-        val packageName = activity.packageName
-        val addToQueueLabel = resources.getIdentifier("add_to_queue", "string", packageName)
-        val addToQueueIcon = resources.getIdentifier("ic_add_to_queue_last", "drawable", packageName)
-        if (addToQueueLabel == 0 && addToQueueIcon == 0) return null
-
-        val items = invokeItems(contextMenu) ?: return null
-        return items.firstOrNull { item ->
-            item != null && matchesAddToQueue(item, addToQueueLabel, addToQueueIcon)
-        }
-    }
-
-    private fun invokeItems(contextMenu: Any): List<*>? {
-        var fallback: Method? = null
-        for (method in contextMenu.javaClass.methods) {
-            if (method.parameterTypes.isNotEmpty()) continue
-            if (!List::class.java.isAssignableFrom(method.returnType)) continue
-            if (method.returnType == List::class.java) {
-                method.isAccessible = true
-                return method.invoke(contextMenu) as? List<*>
-            }
-            if (fallback == null) fallback = method
-        }
-        fallback?.isAccessible = true
-        return fallback?.invoke(contextMenu) as? List<*>
-    }
-
-    /**
-     * The tracking id ("add_to_queue") that identifies the entry in the source is dropped by the
-     * app's minifier, so the entry is matched by the resource ids it was built with instead: the
-     * title string and, as a fallback, the icon.
-     */
-    private fun matchesAddToQueue(item: Any, label: Int, icon: Int): Boolean {
-        val values = HashSet<Int>()
-        collectIntFields(item, values, 0)
-        return (label != 0 && values.contains(label)) || (icon != 0 && values.contains(icon))
-    }
-
-    private fun collectIntFields(instance: Any, into: MutableSet<Int>, depth: Int) {
-        if (depth > 2) return
-        var type: Class<*>? = instance.javaClass
-        while (type != null && type != Any::class.java) {
-            for (field in type.declaredFields) {
-                if (java.lang.reflect.Modifier.isStatic(field.modifiers)) continue
-                try {
-                    field.isAccessible = true
-                    when (field.type) {
-                        Int::class.javaPrimitiveType -> into.add(field.getInt(instance))
-                        // The title of an entry is a sealed class wrapping the string resource id.
-                        else -> if (!field.type.isPrimitive && !field.type.isArray) {
-                            val nested = field.get(instance)
-                            if (nested != null && nested.javaClass.name.startsWith(
-                                    type.name.substringBefore('$')
-                                )
-                            ) {
-                                collectIntFields(nested, into, depth + 1)
-                            }
-                        }
-                    }
-                } catch (_: Throwable) {
-                    // Ignore inaccessible fields.
-                }
-            }
-            type = type.superclass
-        }
-    }
-
-    /** The context menu entry click handler: the only method taking a single activity parameter. */
-    private fun findClickMethod(type: Class<*>): Method? {
-        for (method in type.methods) {
-            val parameters = method.parameterTypes
-            if (parameters.size != 1) continue
-            if (!Activity::class.java.isAssignableFrom(parameters[0])) continue
-            method.isAccessible = true
-            return method
-        }
-        return null
-    }
-
-    /** Fires the long click of a row, arming the interceptor first. */
-    @JvmStatic
-    fun triggerAddToQueue(onLongClick: Any) {
+    fun triggerFromCompose(onLongClick: Any) {
+        if (handled) return
         arm()
         try {
             val invoke = onLongClick.javaClass.methods.firstOrNull {
@@ -210,12 +101,117 @@ object SwipeToQueue {
             }
             if (invoke == null) {
                 Log.w(LOG_TAG, "No invoke method on ${onLongClick.javaClass.name}")
+                disarm()
                 return
             }
             invoke.isAccessible = true
             invoke.invoke(onLongClick)
         } catch (ex: Throwable) {
             Log.e(LOG_TAG, "Could not fire long click", ex)
+            disarm()
+        }
+    }
+
+    /**
+     * Attached by the patch to the context menu manager, which every screen goes through to show
+     * an item's menu.
+     *
+     * During a swipe the menu is never shown. Instead the play queue source the app already
+     * assembled for the item is taken out of the menu and appended to the queue.
+     *
+     * @return true when the swipe consumed the call and no menu must be shown.
+     */
+    @JvmStatic
+    fun onContextMenuShown(activity: Any?, contextMenu: Any?): Boolean {
+        if (!isArmed()) return false
+
+        val source = findSource(contextMenu)
+        if (source == null) {
+            Log.w(LOG_TAG, "No play queue source in ${contextMenu?.javaClass?.name}")
+            return false
+        }
+
+        return try {
+            addSourceToQueue(source)
+            handled = true
+            disarm()
+            (activity as? Context)?.let { toast(it) }
+            true
+        } catch (ex: Throwable) {
+            Log.e(LOG_TAG, "Add to queue failed", ex)
+            false
+        }
+    }
+
+    /**
+     * Appends the source to the play queue.
+     *
+     * The body below is dead code: the patch prepends a direct call into the app's own play
+     * queue, whose classes are renamed by the app's minifier and can only be resolved while
+     * patching. The statements exist so the compiled method owns enough local registers for the
+     * injected code.
+     */
+    @JvmStatic
+    fun addSourceToQueue(source: Any) {
+        val marker = source.hashCode()
+        val other = marker xor 0x4d535751
+        if (other == marker) return
+        throw IllegalStateException("addSourceToQueue was not patched")
+    }
+
+    /**
+     * The play queue source the app assembled for the item.
+     *
+     * A context menu holds it either directly or inside a small wrapper class, so the object
+     * graph is walked a couple of levels deep. Field names are renamed by the app's minifier,
+     * the type is not.
+     */
+    private fun findSource(holder: Any?, depth: Int = 0): Any? {
+        if (holder == null || depth > 2) return null
+        if (isSource(holder.javaClass)) return holder
+
+        val nested = ArrayList<Any>()
+        var type: Class<*>? = holder.javaClass
+        while (type != null && type != Any::class.java) {
+            for (field in type.declaredFields) {
+                if (java.lang.reflect.Modifier.isStatic(field.modifiers)) continue
+                if (field.type.isPrimitive || field.type.isArray) continue
+                val value = try {
+                    field.isAccessible = true
+                    field.get(holder)
+                } catch (_: Throwable) {
+                    null
+                } ?: continue
+
+                if (isSource(value.javaClass)) return value
+                if (value.javaClass.name.startsWith("java.")) continue
+                nested.add(value)
+            }
+            type = type.superclass
+        }
+
+        for (value in nested) {
+            findSource(value, depth + 1)?.let { return it }
+        }
+        return null
+    }
+
+    private fun isSource(type: Class<*>): Boolean {
+        var current: Class<*>? = type
+        while (current != null) {
+            if (current.name == SOURCE_CLASS) return true
+            current = current.superclass
+        }
+        return false
+    }
+
+    private fun toast(context: Context) {
+        mainHandler.post {
+            try {
+                Toast.makeText(context, "Added to queue", Toast.LENGTH_SHORT).show()
+            } catch (ex: Throwable) {
+                Log.e(LOG_TAG, "Could not show toast", ex)
+            }
         }
     }
 }

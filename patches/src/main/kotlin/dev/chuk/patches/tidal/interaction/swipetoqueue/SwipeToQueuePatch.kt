@@ -1,8 +1,6 @@
 /*
- * Copyright 2026 Morphe.
- * https://github.com/MorpheApp/morphe-patches
- *
- * See the included NOTICE file for GPLv3 Section 7 terms that apply to this code.
+ * Copyright 2026 chukfinley.
+ * https://github.com/chukfinley/tidal-patches
  */
 
 package dev.chuk.patches.tidal.interaction.swipetoqueue
@@ -12,30 +10,40 @@ import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLa
 import app.morphe.patcher.extensions.InstructionExtensions.getInstruction
 import app.morphe.patcher.patch.PatchException
 import app.morphe.patcher.patch.bytecodePatch
+import app.morphe.patcher.util.proxy.mutableTypes.MutableMethod.Companion.toMutable
 import app.morphe.patcher.util.smali.ExternalLabel
-import dev.chuk.patches.tidal.shared.Constants.COMPATIBILITY_TIDAL
+import com.android.tools.smali.dexlib2.AccessFlags
 import com.android.tools.smali.dexlib2.Opcode
+import com.android.tools.smali.dexlib2.builder.MutableMethodImplementation
+import com.android.tools.smali.dexlib2.immutable.ImmutableMethod
+import com.android.tools.smali.dexlib2.immutable.ImmutableMethodParameter
 import com.android.tools.smali.dexlib2.iface.ClassDef
 import com.android.tools.smali.dexlib2.iface.Method
 import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 import com.android.tools.smali.dexlib2.iface.reference.TypeReference
+import dev.chuk.patches.tidal.shared.Constants.COMPATIBILITY_TIDAL
 
 private const val EXTENSION_CLASS =
     "Ldev/chuk/extension/tidal/swipetoqueue/SwipeToQueue;"
 
-private const val LEGACY_EXTENSION_CLASS =
-    "Ldev/chuk/extension/tidal/swipetoqueue/LegacyRowSwipe;"
+private const val LIST_EXTENSION_CLASS =
+    "Ldev/chuk/extension/tidal/swipetoqueue/RecyclerViewSwipe;"
 
 private const val MODIFIER_TYPE = "Landroidx/compose/ui/Modifier;"
 private const val CLICKABLE_CLASS = "Landroidx/compose/foundation/ClickableKt;"
+private const val RECYCLER_VIEW_CLASS = "Landroidx/recyclerview/widget/RecyclerView;"
+private const val ADAPTER_TYPE = "Landroidx/recyclerview/widget/RecyclerView\$Adapter;"
 private const val BOTTOM_SHEET_DIALOG_CLASS =
     "Lcom/google/android/material/bottomsheet/BottomSheetDialog;"
-private const val VIEW_HOLDER_TYPE = "Landroidx/recyclerview/widget/RecyclerView\$ViewHolder;"
 
-/**
- * Register of the parameter at [index]. Wide parameters occupy two registers.
- * Only valid for static methods, where the first parameter is `p0`.
- */
+private const val SOURCE_TYPE = "Lcom/aspiro/wamp/playqueue/source/model/Source;"
+private const val TRACK_TYPE = "Lcom/aspiro/wamp/model/Track;"
+private const val CONTEXTUAL_METADATA_TYPE =
+    "Lcom/aspiro/wamp/eventtracking/model/ContextualMetadata;"
+private const val NAVIGATION_INFO_TYPE = "Lcom/tidal/android/navigation/NavigationInfo;"
+private const val ADD_TO_QUEUE_METHOD = "addAsLastInActives"
+
+/** Register of the parameter at [index] of a static method, where the first parameter is `p0`. */
 private fun parameterRegisterOfStatic(method: Method, index: Int): Int {
     var register = 0
     method.parameterTypes.forEachIndexed { current, type ->
@@ -57,11 +65,95 @@ val swipeToQueuePatch = bytecodePatch(
 
     execute {
 
+        // region Add to queue.
+        //
+        // The extension cannot reach the play queue itself because its classes are renamed by the
+        // app's minifier, so the body of its `addSourceToQueue` is written here. The queue is
+        // reached the same way the app's own "Add to queue" menu entry reaches it:
+        //
+        //     PlayQueueProvider(PlayQueueHolder()).get().addAsLastInActives(source)
+
+        val playQueueClass = classDefByOrNull { classDef ->
+            classDef.methods.any { method ->
+                method.name == ADD_TO_QUEUE_METHOD &&
+                    method.parameterTypes.size == 1 &&
+                    method.parameterTypes[0] == SOURCE_TYPE
+            }
+        } ?: throw PatchException("Could not find the play queue")
+
+        // The provider is built from a single dependency that itself needs no arguments, which
+        // makes it the one queue entry point reachable from outside the dependency graph.
+        var holderType: String? = null
+        val providerClass = classDefByOrNull { classDef ->
+            val hasGetter = classDef.methods.any {
+                it.parameterTypes.isEmpty() && it.returnType == playQueueClass.type
+            }
+            if (!hasGetter) return@classDefByOrNull false
+
+            val constructor = classDef.methods.firstOrNull {
+                it.name == "<init>" && it.parameterTypes.size == 1
+            } ?: return@classDefByOrNull false
+
+            val dependency = constructor.parameterTypes[0].toString()
+            val hasDefaultConstructor = classDefByOrNull(dependency)?.methods?.any {
+                it.name == "<init>" && it.parameterTypes.isEmpty()
+            } == true
+
+            if (hasDefaultConstructor) holderType = dependency
+            hasDefaultConstructor
+        } ?: throw PatchException("Could not find the play queue provider")
+
+        val queueGetterName = providerClass.methods.first {
+            it.parameterTypes.isEmpty() && it.returnType == playQueueClass.type
+        }.name
+
+        // Written into the provider class itself, because a method created here can be given the
+        // scratch registers the calls need, which the compiled extension stub does not have.
+        val queueBridge = ImmutableMethod(
+            providerClass.type,
+            "morpheAddToQueue",
+            listOf(ImmutableMethodParameter("Ljava/lang/Object;", null, null)),
+            "V",
+            AccessFlags.PUBLIC.value or AccessFlags.STATIC.value,
+            null,
+            null,
+            MutableMethodImplementation(4),
+        ).toMutable()
+
+        queueBridge.addInstructions(
+            0,
+            """
+                new-instance v0, $holderType
+                invoke-direct { v0 }, $holderType-><init>()V
+                new-instance v1, ${providerClass.type}
+                invoke-direct { v1, v0 }, ${providerClass.type}-><init>($holderType)V
+                invoke-virtual { v1 }, ${providerClass.type}->$queueGetterName()${playQueueClass.type}
+                move-result-object v1
+                check-cast p0, $SOURCE_TYPE
+                invoke-interface { v1, p0 }, ${playQueueClass.type}->$ADD_TO_QUEUE_METHOD($SOURCE_TYPE)V
+                return-void
+            """
+        )
+
+        mutableClassDefBy(providerClass).methods.add(queueBridge)
+
+        mutableClassDefBy(EXTENSION_CLASS).methods.first {
+            it.name == "addSourceToQueue"
+        }.addInstructions(
+            0,
+            """
+                invoke-static { p0 }, ${providerClass.type}->morpheAddToQueue(Ljava/lang/Object;)V
+                return-void
+            """
+        )
+
+        // endregion
+
         // region Compose rows.
         //
         // Every long clickable Compose component goes through one of the combinedClickable
-        // overloads. The swipe modifier is appended there and filters non row layouts itself,
-        // which covers search, home, album, playlist, artist and mix screens with a single hook.
+        // overloads. The gesture is appended there and filters non row layouts itself, which
+        // covers search, home, album, playlist, artist and mix screens with a single hook.
 
         val clickableClass = classDefByOrNull(CLICKABLE_CLASS)
             ?: throw PatchException("Could not find $CLICKABLE_CLASS")
@@ -76,7 +168,8 @@ val swipeToQueuePatch = bytecodePatch(
             // In every overload the parameter order is
             // (..., onClickLabel: String, role: Role, onLongClickLabel: String, onLongClick, ...),
             // so the long click callback always follows the last string parameter.
-            val lastStringParameter = method.parameterTypes.indexOfLast { it == "Ljava/lang/String;" }
+            val lastStringParameter =
+                method.parameterTypes.indexOfLast { it == "Ljava/lang/String;" }
             if (lastStringParameter == -1) return@forEach
             val onLongClickParameter = lastStringParameter + 1
             if (onLongClickParameter >= method.parameterTypes.size) return@forEach
@@ -121,10 +214,15 @@ val swipeToQueuePatch = bytecodePatch(
 
         // endregion
 
-        // region Context menu interception.
+        // region Context menu manager.
         //
-        // The gesture fires the row's own long click and the context menu it opens is consumed
-        // here, so the app resolves the item and performs the actual "add to queue".
+        // The gesture fires the row's own long press, which every screen answers by handing a
+        // context menu to the manager below. The menu object carries the item and the play queue
+        // source the app assembled for it, so a swipe consumes the call here: the source is
+        // queued directly and no menu is ever built or shown.
+        //
+        // This also swallows a menu that the app's own long press detector may have started
+        // while the finger was still moving.
 
         val bottomSheetSubclasses = HashSet<String>()
         classDefForEach { classDef ->
@@ -146,88 +244,54 @@ val swipeToQueuePatch = bytecodePatch(
                         bottomSheetSubclasses.contains(
                             ((instruction as ReferenceInstruction).reference as TypeReference).type
                         )
-                } ?: false
+                } == true
 
                 if (constructsDialog) contextMenuMethod = classDef to method
             }
         }
 
-        val (contextMenuClass, showMethod) = contextMenuMethod
+        val (contextMenuClass, contextMenuShow) = contextMenuMethod
             ?: throw PatchException("Could not find the context menu manager")
 
-        mutableClassDefBy(contextMenuClass).methods.first {
-            it.name == showMethod.name && it.parameterTypes == showMethod.parameterTypes
-        }.apply {
-            val registerCount = implementation?.registerCount ?: 0
-            val activityRegister = registerCount - 2
-            val menuRegister = registerCount - 1
-            if (registerCount - 3 < 2) {
-                throw PatchException("No free register in ${contextMenuClass.type}->$name")
-            }
-
-            addInstructionsWithLabels(
-                0,
-                """
-                    move-object/from16 v0, v$activityRegister
-                    move-object/from16 v1, v$menuRegister
-                    invoke-static { v0, v1 }, $EXTENSION_CLASS->onContextMenuShown(Ljava/lang/Object;Ljava/lang/Object;)Z
-                    move-result v0
-                    if-eqz v0, :morphe_show_menu
-                    return-void
-                """,
-                ExternalLabel("morphe_show_menu", getInstruction(0))
-            )
-        }
-
-        // endregion
-
-        // region Legacy RecyclerView rows.
-        //
-        // Screens that were not migrated to Compose bind their rows through a single adapter
-        // delegate manager, which is where the touch handling is attached.
-
-        val legacyBindMethod = run {
-            var found: Pair<ClassDef, Method>? = null
-            classDefForEach { classDef ->
-                if (found != null) return@classDefForEach
-                val bind = classDef.methods.firstOrNull { method ->
-                    method.returnType == "V" &&
-                        method.parameterTypes.size == 2 &&
-                        method.parameterTypes[0] == "Ljava/lang/Object;" &&
-                        method.parameterTypes[1] == VIEW_HOLDER_TYPE
-                }
-                val createsViewHolder = classDef.methods.any { method ->
-                    method.returnType == VIEW_HOLDER_TYPE &&
-                        method.parameterTypes.size == 2 &&
-                        method.parameterTypes[0] == "Landroid/view/ViewGroup;" &&
-                        method.parameterTypes[1] == "I"
-                }
-                if (bind != null && createsViewHolder) found = classDef to bind
-            }
-            found
-        }
-
-        // Legacy rows only exist on a few remaining screens, so a missing delegate manager is
-        // not an error.
-        legacyBindMethod?.let { (classDef, method) ->
+        (contextMenuClass to contextMenuShow).let { (classDef, method) ->
             mutableClassDefBy(classDef).methods.first {
                 it.name == method.name && it.parameterTypes == method.parameterTypes
             }.apply {
                 val registerCount = implementation?.registerCount ?: 0
-                val viewHolderRegister = registerCount - 1
-                addInstructions(
+                if (registerCount - 3 < 2) {
+                    throw PatchException("No free register in ${classDef.type}->$name")
+                }
+
+                addInstructionsWithLabels(
                     0,
-                    if (viewHolderRegister < 16) {
-                        "invoke-static { v$viewHolderRegister }, $LEGACY_EXTENSION_CLASS->attach($VIEW_HOLDER_TYPE)V"
-                    } else {
-                        """
-                            move-object/from16 v0, v$viewHolderRegister
-                            invoke-static { v0 }, $LEGACY_EXTENSION_CLASS->attach($VIEW_HOLDER_TYPE)V
-                        """
-                    }
+                    """
+                        move-object/from16 v0, v${registerCount - 2}
+                        move-object/from16 v1, v${registerCount - 1}
+                        invoke-static { v0, v1 }, $EXTENSION_CLASS->onContextMenuShown(Ljava/lang/Object;Ljava/lang/Object;)Z
+                        move-result v0
+                        if-eqz v0, :morphe_show_menu
+                        return-void
+                    """,
+                    ExternalLabel("morphe_show_menu", getInstruction(0))
                 )
             }
         }
+
+        // endregion
+
+        // region Legacy lists.
+        //
+        // Screens that were not migrated to Compose, for example the favourite tracks list, get
+        // the gesture through the RecyclerView they are built on.
+
+        mutableClassDefBy(RECYCLER_VIEW_CLASS).methods.first {
+            it.name == "setAdapter" &&
+                it.parameterTypes.size == 1 &&
+                it.parameterTypes[0] == ADAPTER_TYPE
+        }.addInstructions(
+            0,
+            "invoke-static { p0 }, $LIST_EXTENSION_CLASS->attach($RECYCLER_VIEW_CLASS)V"
+        )
 
         // endregion
     }
