@@ -1,3 +1,9 @@
+## [1.6.0](https://github.com/chukfinley/tidal-patches/compare/v1.5.0...v1.6.0) (2026-07-28)
+
+### ✨ New Features
+
+* Let a fast flick count like a full swipe ([14854a1](https://github.com/chukfinley/tidal-patches/commit/14854a17ebf85cf59d5043f68d5438192f01ef65))
+
 ## [1.6.0-dev.1](https://github.com/chukfinley/tidal-patches/compare/v1.5.0...v1.6.0-dev.1) (2026-07-28)
 
 ### ✨ New Features
