@@ -1,3 +1,9 @@
+## [1.2.0-dev.1](https://github.com/chukfinley/tidal-patches/compare/v1.1.0...v1.2.0-dev.1) (2026-07-28)
+
+### ✨ New Features
+
+* Show the swipe confirmation on the row ([e37a3d7](https://github.com/chukfinley/tidal-patches/commit/e37a3d795b4a39d04d39fbb24a8c687ccb191fef))
+
 ## [1.1.0](https://github.com/chukfinley/tidal-patches/compare/v1.0.1...v1.1.0) (2026-07-28)
 
 ### ✨ New Features
