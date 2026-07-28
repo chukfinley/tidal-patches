@@ -1,3 +1,9 @@
+## [1.3.0-dev.1](https://github.com/chukfinley/tidal-patches/compare/v1.2.0...v1.3.0-dev.1) (2026-07-28)
+
+### ✨ New Features
+
+* Snap the row instead of animating it, drop the toast ([8bfb6ac](https://github.com/chukfinley/tidal-patches/commit/8bfb6ac23153e02daf1922d4233cf8efdefae037))
+
 ## [1.2.0](https://github.com/chukfinley/tidal-patches/compare/v1.1.0...v1.2.0) (2026-07-28)
 
 ### ✨ New Features
