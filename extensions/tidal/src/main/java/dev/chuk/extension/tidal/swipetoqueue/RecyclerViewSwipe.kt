@@ -5,6 +5,9 @@
 
 package dev.chuk.extension.tidal.swipetoqueue
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.content.res.Resources
 import android.graphics.Canvas
 import android.graphics.Color
@@ -12,11 +15,10 @@ import android.graphics.ColorFilter
 import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.drawable.Drawable
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import android.view.MotionEvent
 import android.view.View
+import android.view.animation.DecelerateInterpolator
 import androidx.recyclerview.widget.RecyclerView
 import kotlin.math.abs
 import kotlin.math.min
@@ -33,10 +35,6 @@ object RecyclerViewSwipe {
     private const val LOG_TAG = "morphe-swipe-to-queue"
     private const val TAG_KEY = 0x4d535751 // "MSWQ"
 
-    /** How long the row stays pushed out before it snaps back. */
-    private const val HOLD_MS = 160L
-
-    private val handler = Handler(Looper.getMainLooper())
 
     @JvmStatic
     fun attach(recyclerView: RecyclerView?) {
@@ -53,93 +51,131 @@ object RecyclerViewSwipe {
     private class SwipeInterceptor : RecyclerView.OnItemTouchListener {
 
         private val density = Resources.getSystem().displayMetrics.density
-        private val armDistance = 12f * density
+        private val touchSlop = 8f * density
         private val triggerDistance = 40f * density
+        private val maxOffset = 96f * density
         private val maxRowHeight = 132f * density
 
         private var downX = 0f
         private var downY = 0f
         private var tracking = false
+        private var active = false
         private var fired = false
+        private var row: View? = null
+        private var indicator: QueueIndicator? = null
 
         override fun onInterceptTouchEvent(recyclerView: RecyclerView, event: MotionEvent): Boolean {
+            handle(recyclerView, event)
+            return active
+        }
+
+        /** Once the swipe is recognised the list hands the rest of the gesture over here. */
+        override fun onTouchEvent(recyclerView: RecyclerView, event: MotionEvent) {
+            handle(recyclerView, event)
+        }
+
+        private fun handle(recyclerView: RecyclerView, event: MotionEvent) {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.x
                     downY = event.y
+                    active = false
                     fired = false
                     tracking = true
                 }
 
                 MotionEvent.ACTION_MOVE -> {
-                    if (!tracking || fired) return fired
+                    if (!tracking) return
                     val dx = event.x - downX
                     val dy = event.y - downY
 
-                    if (abs(dy) > triggerDistance || dx < -triggerDistance) {
-                        tracking = false
-                        return false
+                    if (!active) {
+                        // A vertical drag belongs to the list, a left drag to what is behind it.
+                        if (abs(dy) > touchSlop || dx < -touchSlop) {
+                            tracking = false
+                            return
+                        }
+                        if (dx < touchSlop || dx < abs(dy) * 1.5f) return
+
+                        val candidate = recyclerView.findChildViewUnder(downX, downY) ?: return
+                        if (candidate.height > maxRowHeight || !candidate.isLongClickable) {
+                            tracking = false
+                            return
+                        }
+
+                        row = candidate
+                        indicator = QueueIndicator(candidate, density).also {
+                            recyclerView.overlay.add(it)
+                        }
+                        active = true
+                        // From here on the app's own long press could fire, and its menu has to
+                        // be turned into a queue action just like the one below.
+                        SwipeToQueue.arm()
                     }
-                    if (dx < abs(dy) * 1.5f) return false
 
-                    // Arm early: from here on the app's own long press could fire, and its menu
-                    // has to be turned into a queue action just like the one below.
-                    if (dx > armDistance) SwipeToQueue.arm()
-                    if (dx < triggerDistance) return false
+                    val offset = resist(dx - touchSlop)
+                    row?.translationX = offset
+                    indicator?.update(offset)
 
-                    val row = recyclerView.findChildViewUnder(downX, downY) ?: return false
-                    if (row.height > maxRowHeight || !row.isLongClickable) return false
-
-                    fired = true
-                    if (SwipeToQueue.isHandled()) return true
-                    SwipeToQueue.arm()
-                    try {
-                        row.performLongClick()
-                    } catch (ex: Throwable) {
-                        Log.e(LOG_TAG, "Could not fire long click", ex)
+                    if (!fired && offset >= triggerDistance) {
+                        fired = true
+                        if (SwipeToQueue.isHandled()) return
+                        SwipeToQueue.arm()
+                        try {
+                            row?.performLongClick()
+                        } catch (ex: Throwable) {
+                            Log.e(LOG_TAG, "Could not fire long click", ex)
+                        }
                     }
-                    confirm(recyclerView, row)
-                    return true
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (active) settle(recyclerView)
                     if (tracking) SwipeToQueue.endGesture()
                     tracking = false
+                    active = false
                     fired = false
                 }
             }
-            return false
         }
 
-        /** Swallows the rest of the gesture so it never turns into a click or a scroll. */
-        override fun onTouchEvent(recyclerView: RecyclerView, event: MotionEvent) {
-            if (event.actionMasked == MotionEvent.ACTION_UP ||
-                event.actionMasked == MotionEvent.ACTION_CANCEL
-            ) {
-                if (tracking) SwipeToQueue.endGesture()
-                tracking = false
-                fired = false
+        /**
+         * The row follows the finger one to one up to the point where the item is queued, then
+         * gives way more slowly, so the gesture has an end that can be felt.
+         */
+        private fun resist(raw: Float): Float {
+            if (raw <= 0f) return 0f
+            if (raw <= triggerDistance) return raw
+            return min(triggerDistance + (raw - triggerDistance) * 0.35f, maxOffset)
+        }
+
+        /** Lets the row glide back once the finger is gone. */
+        private fun settle(recyclerView: RecyclerView) {
+            val target = row ?: return
+            val overlay = indicator
+            row = null
+            indicator = null
+
+            ValueAnimator.ofFloat(target.translationX, 0f).apply {
+                duration = 180L
+                interpolator = DecelerateInterpolator(1.5f)
+                addUpdateListener {
+                    val value = it.animatedValue as Float
+                    target.translationX = value
+                    overlay?.update(value)
+                }
+                addListener(object : AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(animation: Animator) {
+                        target.translationX = 0f
+                        overlay?.let { recyclerView.overlay.remove(it) }
+                    }
+                })
+                start()
             }
         }
 
         override fun onRequestDisallowInterceptTouchEvent(disallow: Boolean) = Unit
 
-        /**
-         * The same confirmation the Compose rows show: the row snaps to the right, uncovering a
-         * strip with the queue glyph, and snaps back. Both steps are instant.
-         */
-        private fun confirm(recyclerView: RecyclerView, row: View) {
-            val offset = 64f * density
-            val indicator = QueueIndicator(row, density)
-            indicator.update(offset)
-            recyclerView.overlay.add(indicator)
-            row.translationX = offset
-
-            handler.postDelayed({
-                row.translationX = 0f
-                recyclerView.overlay.remove(indicator)
-            }, HOLD_MS)
-        }
     }
 
     /** Green strip with the queue glyph, drawn in the area the row uncovers. */
@@ -166,7 +202,8 @@ object RecyclerViewSwipe {
             paint.color = ACCENT
             canvas.drawRect(left, top, left + offset, bottom, paint)
 
-            val glyph = 22f * density
+            val ratio = min(offset / (40f * density), 1f)
+            val glyph = 22f * density * (0.6f + 0.4f * ratio)
             if (offset < glyph * 1.5f) return
             val centerX = left + min(offset / 2f, offset - glyph)
             val centerY = (top + bottom) / 2f
@@ -174,7 +211,7 @@ object RecyclerViewSwipe {
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 2f * density
             paint.strokeCap = Paint.Cap.ROUND
-            paint.color = Color.WHITE
+            paint.color = Color.argb((255 * min(ratio * 1.6f, 1f)).toInt(), 255, 255, 255)
 
             val glyphLeft = centerX - glyph / 2f
             val glyphRight = centerX + glyph / 2f

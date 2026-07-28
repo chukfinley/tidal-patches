@@ -5,9 +5,9 @@
 
 package dev.chuk.extension.tidal.swipetoqueue
 
+import android.animation.ValueAnimator
 import android.content.res.Resources
-import android.os.Handler
-import android.os.Looper
+import android.view.animation.DecelerateInterpolator
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -62,8 +62,8 @@ internal class SwipeToQueueNode(
     private val triggerDistance = 40f * density
     private val minRowHeight = 32f * density
     private val maxRowHeight = 132f * density
-    // Roughly a centimetre.
-    private val pushDistance = 64f * density
+    private val touchSlop = 8f * density
+    private val maxOffset = 96f * density
     private val iconSize = 22f * density
 
     private var rootWidth = 0
@@ -72,21 +72,27 @@ internal class SwipeToQueueNode(
     private var tracking = false
     private var fired = false
 
-    /** How far the row currently sits to the right. Either fully out or fully back, never between. */
+    /** How far the row currently sits to the right. */
     private var offset = 0f
+    private var active = false
+    private var settleAnimator: ValueAnimator? = null
 
     override fun onPlaced(coordinates: LayoutCoordinates) {
         rootWidth = coordinates.findRootCoordinates().size.width
     }
 
     override fun onDetach() {
-        handler.removeCallbacksAndMessages(null)
+        settleAnimator?.cancel()
+        settleAnimator = null
         offset = 0f
+        active = false
     }
 
     override fun onCancelPointerInput() {
         if (tracking) SwipeToQueue.endGesture()
+        if (active) settle()
         tracking = false
+        active = false
         fired = false
     }
 
@@ -101,8 +107,10 @@ internal class SwipeToQueueNode(
         when (pointerEvent.type) {
             PointerEventType.Press -> {
                 fired = false
+                active = false
                 tracking = pointerEvent.changes.size == 1 && isRowLike(bounds)
                 if (tracking) {
+                    settleAnimator?.cancel()
                     downX = change.position.x
                     downY = change.position.y
                 }
@@ -110,37 +118,42 @@ internal class SwipeToQueueNode(
 
             PointerEventType.Move -> {
                 if (!tracking) return
-                if (fired) {
-                    // Keep the rest of the drag away from the click and the list scroll.
-                    change.consume()
-                    return
-                }
 
                 val dx = change.position.x - downX
                 val dy = change.position.y - downY
 
-                // A vertical drag belongs to the list, a left drag to whatever is behind it.
-                if (abs(dy) > triggerDistance || dx < -triggerDistance) {
-                    tracking = false
-                    return
+                if (!active) {
+                    // A vertical drag belongs to the list, a left drag to whatever is behind it.
+                    if (abs(dy) > touchSlop || dx < -touchSlop) {
+                        tracking = false
+                        return
+                    }
+                    if (dx < touchSlop || dx < abs(dy) * 1.5f) return
+
+                    active = true
+                    // From here on the app's own long press detector could fire, and its menu has
+                    // to be turned into a queue action just like the one the gesture triggers.
+                    SwipeToQueue.arm()
                 }
-                if (dx < abs(dy) * 1.5f) return
 
-                // Arm early: from here on the app's own long press detector could fire, and its
-                // menu has to be turned into a queue action just like the one below.
-                if (dx > armDistance) SwipeToQueue.arm()
-                if (dx < triggerDistance) return
-
-                fired = true
+                offset = resist(dx - touchSlop)
                 change.consume()
-                SwipeToQueue.triggerFromCompose(onLongClick)
-                confirm()
+                if (isAttached) invalidateDraw()
+
+                if (!fired && offset >= triggerDistance) {
+                    fired = true
+                    SwipeToQueue.triggerFromCompose(onLongClick)
+                }
             }
 
             PointerEventType.Release -> {
-                if (fired) change.consume()
+                if (active) {
+                    change.consume()
+                    settle()
+                }
                 if (tracking) SwipeToQueue.endGesture()
                 tracking = false
+                active = false
                 fired = false
             }
 
@@ -149,18 +162,31 @@ internal class SwipeToQueueNode(
     }
 
     /**
-     * The confirmation: the row snaps to the right, uncovering a strip with the queue glyph, and
-     * snaps back. Both steps are instant. Nothing is interpolated, so there is no motion that
-     * could lag behind the swipe.
+     * The row follows the finger one to one up to the point where the item is queued, then gives
+     * way more slowly, so the gesture has an end that can be felt rather than a hard stop.
      */
-    private fun confirm() {
-        handler.removeCallbacksAndMessages(null)
-        offset = pushDistance
-        if (isAttached) invalidateDraw()
-        handler.postDelayed({
-            offset = 0f
-            if (isAttached) invalidateDraw()
-        }, HOLD_MS)
+    private fun resist(raw: Float): Float {
+        if (raw <= 0f) return 0f
+        if (raw <= triggerDistance) return raw
+        val past = raw - triggerDistance
+        return min(triggerDistance + past * 0.35f, maxOffset)
+    }
+
+    /** Lets the row glide back once the finger is gone. */
+    private fun settle() {
+        settleAnimator?.cancel()
+        val from = offset
+        if (from <= 0f) return
+
+        settleAnimator = ValueAnimator.ofFloat(from, 0f).apply {
+            duration = 180L
+            interpolator = DecelerateInterpolator(1.5f)
+            addUpdateListener {
+                offset = it.animatedValue as Float
+                if (isAttached) invalidateDraw()
+            }
+            start()
+        }
     }
 
     override fun ContentDrawScope.draw() {
@@ -186,13 +212,15 @@ internal class SwipeToQueueNode(
 
     /** Three list lines with a plus, drawn from primitives so the patch adds no drawable. */
     private fun ContentDrawScope.drawQueueIcon(revealed: Float, height: Float) {
-        val glyph = iconSize
+        // Grows in with the drag and settles at full size once the item is queued.
+        val ratio = min(revealed / triggerDistance, 1f)
+        val glyph = iconSize * (0.6f + 0.4f * ratio)
         if (revealed < glyph * 1.5f) return
 
         val centerX = min(revealed / 2f, revealed - glyph)
         val centerY = height / 2f
         val stroke = 2f * density
-        val color = Color.White
+        val color = Color.White.copy(alpha = min(ratio * 1.6f, 1f))
 
         val left = centerX - glyph / 2f
         val right = centerX + glyph / 2f
@@ -221,9 +249,5 @@ internal class SwipeToQueueNode(
         /** Spotify's "add to queue" green. */
         val ACCENT = Color(0xFF1DB954)
 
-        /** How long the row stays pushed out before it snaps back. */
-        const val HOLD_MS = 160L
-
-        val handler = Handler(Looper.getMainLooper())
     }
 }
