@@ -21,6 +21,12 @@ internal object Constants {
             "2e8a4794a95418367e36c84303feb43774919d6a351129d23d0fcf1b0b729454"
         ),
         targets = listOf(
+            // The patch hooks structural entry points instead of app specific code, so it is
+            // expected to keep working with newer versions as well.
+            AppTarget(
+                version = null,
+                minSdk = 29
+            ),
             AppTarget(
                 version = "2.202.0",
                 minSdk = 29
