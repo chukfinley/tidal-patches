@@ -4,6 +4,14 @@ extension {
 
 android {
     namespace = "dev.chuk.extension.tidal"
+
+    defaultConfig {
+        // Must stay at 24 or above. Below that, D8 desugars the default methods of the Compose
+        // node interfaces into `Interface$-CC` helper classes. Those classes exist in neither
+        // this extension nor the patched app (TIDAL builds with minSdk 29 and keeps real default
+        // methods), so the app would crash with NoClassDefFoundError on the first layout pass.
+        minSdk = 26
+    }
 }
 
 dependencies {
