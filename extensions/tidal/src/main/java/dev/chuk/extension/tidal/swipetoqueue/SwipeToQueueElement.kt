@@ -63,6 +63,10 @@ internal class SwipeToQueueNode(
     private val maxRowHeight = 132f * density
     private val iconSize = 22f * density
 
+    /** A flick this fast counts even when the row did not travel the full distance. */
+    private val flickVelocity = 125f * density
+    private val minFlickOffset = 24f * density
+
     private var rootWidth = 0
     private var rowWidth = 0
     private var downX = 0f
@@ -73,6 +77,9 @@ internal class SwipeToQueueNode(
     /** How far the row currently sits to the right. */
     private var offset = 0f
     private var active = false
+    private var lastX = 0f
+    private var lastTime = 0L
+    private var velocity = 0f
     private var settleAnimator: ValueAnimator? = null
 
     override fun onPlaced(coordinates: LayoutCoordinates) {
@@ -120,6 +127,9 @@ internal class SwipeToQueueNode(
                     settleAnimator?.cancel()
                     downX = change.position.x
                     downY = change.position.y
+                    lastX = change.position.x
+                    lastTime = change.uptimeMillis
+                    velocity = 0f
                 }
             }
 
@@ -143,6 +153,15 @@ internal class SwipeToQueueNode(
                     SwipeToQueue.beginDrag()
                 }
 
+                val elapsed = change.uptimeMillis - lastTime
+                if (elapsed > 0) {
+                    // Smoothed, so a single jittery sample cannot decide the gesture.
+                    val sample = (change.position.x - lastX) / elapsed * 1000f
+                    velocity = velocity * 0.4f + sample * 0.6f
+                    lastX = change.position.x
+                    lastTime = change.uptimeMillis
+                }
+
                 offset = resist(dx - touchSlop)
                 change.consume()
                 if (isAttached) invalidateDraw()
@@ -151,9 +170,11 @@ internal class SwipeToQueueNode(
             PointerEventType.Release -> {
                 if (active) {
                     change.consume()
-                    // Only a swipe carried all the way through queues the item. Anything shorter
-                    // just glides back.
-                    if (offset >= commitDistance && !fired) {
+                    // Carried across the row, or flicked hard enough that the intent is clear.
+                    // Anything else glides back and queues nothing.
+                    val committed = offset >= commitDistance ||
+                        (velocity >= flickVelocity && offset >= minFlickOffset)
+                    if (committed && !fired) {
                         fired = true
                         SwipeToQueue.triggerFromCompose(onLongClick)
                     }

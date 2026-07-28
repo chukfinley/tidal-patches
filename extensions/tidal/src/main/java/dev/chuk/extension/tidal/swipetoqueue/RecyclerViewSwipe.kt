@@ -17,6 +17,7 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.Drawable
 import android.util.Log
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.View
 import android.view.animation.DecelerateInterpolator
 import androidx.recyclerview.widget.RecyclerView
@@ -61,6 +62,11 @@ object RecyclerViewSwipe {
         private var commitDistance = 0f
         private var maxOffset = 0f
 
+        /** A flick this fast counts even when the row did not travel the full distance. */
+        private val flickVelocity = 125f * density
+        private val minFlickOffset = 24f * density
+        private var velocityTracker: VelocityTracker? = null
+
         private var downX = 0f
         private var downY = 0f
         private var tracking = false
@@ -87,10 +93,13 @@ object RecyclerViewSwipe {
                     active = false
                     fired = false
                     tracking = true
+                    velocityTracker?.recycle()
+                    velocityTracker = VelocityTracker.obtain().also { it.addMovement(event) }
                 }
 
                 MotionEvent.ACTION_MOVE -> {
                     if (!tracking) return
+                    velocityTracker?.addMovement(event)
                     val dx = event.x - downX
                     val dy = event.y - downY
 
@@ -126,9 +135,16 @@ object RecyclerViewSwipe {
                 }
 
                 MotionEvent.ACTION_UP -> {
-                    // Only a swipe carried all the way through queues the item.
+                    // Carried across the row, or flicked hard enough that the intent is clear.
                     val offset = row?.translationX ?: 0f
-                    if (active && offset >= commitDistance && !fired && !SwipeToQueue.isHandled()) {
+                    val velocity = velocityTracker?.let {
+                        it.addMovement(event)
+                        it.computeCurrentVelocity(1000)
+                        it.xVelocity
+                    } ?: 0f
+                    val committed = offset >= commitDistance ||
+                        (velocity >= flickVelocity && offset >= minFlickOffset)
+                    if (active && committed && !fired && !SwipeToQueue.isHandled()) {
                         fired = true
                         SwipeToQueue.commit()
                         try {
@@ -139,6 +155,8 @@ object RecyclerViewSwipe {
                     }
                     if (active) settle(recyclerView)
                     if (tracking) SwipeToQueue.endDrag()
+                    velocityTracker?.recycle()
+                    velocityTracker = null
                     tracking = false
                     active = false
                     fired = false
@@ -147,6 +165,8 @@ object RecyclerViewSwipe {
                 MotionEvent.ACTION_CANCEL -> {
                     if (active) settle(recyclerView)
                     if (tracking) SwipeToQueue.endDrag()
+                    velocityTracker?.recycle()
+                    velocityTracker = null
                     tracking = false
                     active = false
                     fired = false
