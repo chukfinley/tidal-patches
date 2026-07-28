@@ -1,3 +1,9 @@
+## [1.1.0](https://github.com/chukfinley/tidal-patches/compare/v1.0.1...v1.1.0) (2026-07-28)
+
+### ✨ New Features
+
+* Queue the item directly instead of opening its menu ([28a9405](https://github.com/chukfinley/tidal-patches/commit/28a9405799133d105b60cd6cc0d64f95d8efa4f4))
+
 ## [1.1.0-dev.1](https://github.com/chukfinley/tidal-patches/compare/v1.0.1...v1.1.0-dev.1) (2026-07-28)
 
 ### ✨ New Features
