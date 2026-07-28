@@ -1,3 +1,9 @@
+## [1.4.0-dev.1](https://github.com/chukfinley/tidal-patches/compare/v1.3.0...v1.4.0-dev.1) (2026-07-28)
+
+### ✨ New Features
+
+* Let the row follow the finger again ([e9f2236](https://github.com/chukfinley/tidal-patches/commit/e9f22360836594b9b8a0b0983cfccdf7d7744957))
+
 ## [1.3.0](https://github.com/chukfinley/tidal-patches/compare/v1.2.0...v1.3.0) (2026-07-28)
 
 ### ✨ New Features
