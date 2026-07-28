@@ -1,3 +1,9 @@
+## [1.5.0-dev.1](https://github.com/chukfinley/tidal-patches/compare/v1.4.0...v1.5.0-dev.1) (2026-07-28)
+
+### ✨ New Features
+
+* Queue only when the swipe is carried through ([695c498](https://github.com/chukfinley/tidal-patches/commit/695c498de67cb71e24334298e8edb0acefe88ba7))
+
 ## [1.4.0](https://github.com/chukfinley/tidal-patches/compare/v1.3.0...v1.4.0) (2026-07-28)
 
 ### ✨ New Features
